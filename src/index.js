@@ -1141,20 +1141,7 @@ class MiniNotesApp {
                 <div class="editor-container">
                     <div class="editor">
                         <div class="editor-content">
-                            <textarea id="noteContent" placeholder="Start writing your note in markdown...
-
-# Welcome to Mini Notes!
-
-Start writing your thoughts here. You can use **markdown** syntax for formatting.
-
-## Features
-- **Bold** and *italic* text
-- `Code snippets`
-- Lists and more!
-
-> This is a blockquote
-
-Happy writing! ✨"></textarea>
+                            <textarea id="noteContent" placeholder="Start writing your note in markdown..."></textarea>
                         </div>
                     </div>
                     <div class="preview">
@@ -1453,13 +1440,32 @@ Happy writing! ✨"></textarea>
         async function createNote() {
             try {
                 setSaveStatus('saving');
+                
+                // Create welcome content for new notes
+                const welcomeContent = notes.length === 0 ? 
+                    \`# Welcome to Mini Notes!
+
+Start writing your thoughts here. You can use **markdown** syntax for formatting.
+
+## Features
+- **Bold** and *italic* text
+- \\\`Code snippets\\\`
+- Lists and more!
+
+> This is a blockquote
+
+Happy writing! ✨\` : '';
+
                 const response = await fetch('/api/notes', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': \`Bearer \${currentUser.token}\`
                     },
-                    body: JSON.stringify({ title: 'Untitled Note', content: '' })
+                    body: JSON.stringify({ 
+                        title: notes.length === 0 ? 'Welcome to Mini Notes' : 'Untitled Note', 
+                        content: welcomeContent 
+                    })
                 });
 
                 if (response.ok) {

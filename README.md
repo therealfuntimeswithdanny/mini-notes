@@ -1,0 +1,1 @@
+Can you help me make an app called Mini Notes a Cloudflare workers app that stores the users notes and auth in a kv namespace. Style it with a markdown editor but make it look clean at the same time with a sidebar with buttons for delete, add & rename

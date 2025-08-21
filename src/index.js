@@ -226,7 +226,7 @@ class MiniNotesApp {
       };
 
       notes.push(newNote);
-      await this.NOTES.put(notesKey, JSON.stringify(notes));
+      await this.putToStorage(this.NOTES, notesKey, JSON.stringify(notes));
 
       return new Response(JSON.stringify(newNote), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
@@ -255,7 +255,7 @@ class MiniNotesApp {
         updatedAt: new Date().toISOString()
       };
 
-      await this.NOTES.put(notesKey, JSON.stringify(notes));
+      await this.putToStorage(this.NOTES, notesKey, JSON.stringify(notes));
 
       return new Response(JSON.stringify(notes[noteIndex]), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
@@ -277,7 +277,7 @@ class MiniNotesApp {
         });
       }
 
-      await this.NOTES.put(notesKey, JSON.stringify(filteredNotes));
+      await this.putToStorage(this.NOTES, notesKey, JSON.stringify(filteredNotes));
 
       return new Response(JSON.stringify({ success: true }), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }

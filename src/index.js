@@ -56,69 +56,94 @@ class MiniNotesApp {
 
   async handleAuth(request, action) {
     const method = request.method;
+    console.log(`Auth request: ${method} /api/auth/${action}`);
 
     if (action === 'login' && method === 'POST') {
-      const { username, password } = await request.json();
-      
-      const userKey = `user:${username}`;
-      const userData = await this.USERS.get(userKey);
-      
-      if (!userData) {
-        return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
-          status: 401,
+      try {
+        const { username, password } = await request.json();
+        console.log('Login attempt for username:', username);
+        
+        const userKey = `user:${username}`;
+        const userData = await this.USERS.get(userKey);
+        
+        if (!userData) {
+          console.log('User not found:', username);
+          return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+            status: 401,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        const user = JSON.parse(userData);
+        const isValid = await bcrypt.compare(password, user.passwordHash);
+
+        if (!isValid) {
+          console.log('Invalid password for user:', username);
+          return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+            status: 401,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        console.log('Login successful for user:', username);
+        const token = await this.generateToken(username);
+        return new Response(JSON.stringify({ token, username }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('Login error:', error);
+        return new Response(JSON.stringify({ error: 'Login failed: ' + error.message }), {
+          status: 500,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
         });
       }
-
-      const user = JSON.parse(userData);
-      const isValid = await bcrypt.compare(password, user.passwordHash);
-
-      if (!isValid) {
-        return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
-          status: 401,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-        });
-      }
-
-      const token = await this.generateToken(username);
-      return new Response(JSON.stringify({ token, username }), {
-        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-      });
     }
 
     if (action === 'register' && method === 'POST') {
-      const { username, password } = await request.json();
-      
-      if (!username || !password) {
-        return new Response(JSON.stringify({ error: 'Username and password required' }), {
-          status: 400,
+      try {
+        const { username, password } = await request.json();
+        console.log('Registration attempt for username:', username);
+        
+        if (!username || !password) {
+          return new Response(JSON.stringify({ error: 'Username and password required' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        const userKey = `user:${username}`;
+        const existingUser = await this.USERS.get(userKey);
+        
+        if (existingUser) {
+          console.log('Username already exists:', username);
+          return new Response(JSON.stringify({ error: 'Username already exists' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        console.log('Creating new user:', username);
+        const passwordHash = await bcrypt.hash(password, 10);
+        const userData = {
+          username,
+          passwordHash,
+          createdAt: new Date().toISOString()
+        };
+
+        await this.USERS.put(userKey, JSON.stringify(userData));
+        console.log('User created successfully:', username);
+
+        const token = await this.generateToken(username);
+        return new Response(JSON.stringify({ token, username }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('Registration error:', error);
+        return new Response(JSON.stringify({ error: 'Registration failed: ' + error.message }), {
+          status: 500,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
         });
       }
-
-      const userKey = `user:${username}`;
-      const existingUser = await this.USERS.get(userKey);
-      
-      if (existingUser) {
-        return new Response(JSON.stringify({ error: 'Username already exists' }), {
-          status: 400,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-        });
-      }
-
-      const passwordHash = await bcrypt.hash(password, 10);
-      const userData = {
-        username,
-        passwordHash,
-        createdAt: new Date().toISOString()
-      };
-
-      await this.USERS.put(userKey, JSON.stringify(userData));
-
-      const token = await this.generateToken(username);
-      return new Response(JSON.stringify({ token, username }), {
-        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-      });
     }
 
     return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS });
@@ -225,10 +250,22 @@ class MiniNotesApp {
 
   async generateToken(username) {
     const encoder = new TextEncoder();
-    const data = encoder.encode(username + ':' + Date.now());
+    const data = encoder.encode(username + ':' + Date.now() + ':' + Math.random());
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const token = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    
+    // Store the token in KV storage with expiration (24 hours)
+    const tokenKey = `token:${token}`;
+    const tokenData = {
+      username: username,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+    };
+    
+    await this.USERS.put(tokenKey, JSON.stringify(tokenData), { expirationTtl: 24 * 60 * 60 }); // 24 hours TTL
+    
+    return token;
   }
 
   async authenticateRequest(request) {
@@ -238,13 +275,27 @@ class MiniNotesApp {
     }
 
     const token = authHeader.substring(7);
-    // In a real app, you'd validate the token properly
-    // For this demo, we'll extract username from the token (simplified)
+    
     try {
-      const userKey = `token:${token}`;
-      const username = await this.USERS.get(userKey);
-      return username;
-    } catch {
+      const tokenKey = `token:${token}`;
+      const tokenData = await this.USERS.get(tokenKey);
+      
+      if (!tokenData) {
+        return null;
+      }
+      
+      const tokenInfo = JSON.parse(tokenData);
+      
+      // Check if token has expired
+      if (new Date() > new Date(tokenInfo.expiresAt)) {
+        // Clean up expired token
+        await this.USERS.delete(tokenKey);
+        return null;
+      }
+      
+      return tokenInfo.username;
+    } catch (error) {
+      console.error('Token validation error:', error);
       return null;
     }
   }
@@ -260,32 +311,74 @@ class MiniNotesApp {
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
+            /* Primary Colors */
             --primary-600: #2563eb;
             --primary-700: #1d4ed8;
             --primary-50: #eff6ff;
             --primary-100: #dbeafe;
-            --gray-50: #f9fafb;
-            --gray-100: #f3f4f6;
-            --gray-200: #e5e7eb;
-            --gray-300: #d1d5db;
-            --gray-400: #9ca3af;
-            --gray-500: #6b7280;
-            --gray-600: #4b5563;
-            --gray-700: #374151;
-            --gray-800: #1f2937;
-            --gray-900: #111827;
+            --primary-300: #93c5fd;
+            
+            /* Light Mode Colors */
+            --bg-primary: #f9fafb;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #f3f4f6;
+            --text-primary: #111827;
+            --text-secondary: #374151;
+            --text-tertiary: #6b7280;
+            --text-muted: #9ca3af;
+            --border-primary: #e5e7eb;
+            --border-secondary: #d1d5db;
+            --border-tertiary: #f3f4f6;
+            
+            /* Status Colors */
             --red-500: #ef4444;
             --red-600: #dc2626;
             --green-500: #10b981;
             --green-600: #059669;
             --amber-500: #f59e0b;
             --amber-600: #d97706;
+            
+            /* Shadows */
             --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
             --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
             --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
             --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
             --ring-primary: 0 0 0 3px rgb(37 99 235 / 0.1);
-            --transition-all: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+            --transition-all: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        [data-theme="dark"] {
+            /* Dark Mode Colors */
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f1f5f9;
+            --text-secondary: #e2e8f0;
+            --text-tertiary: #cbd5e1;
+            --text-muted: #94a3b8;
+            --border-primary: #334155;
+            --border-secondary: #475569;
+            --border-tertiary: #64748b;
+            
+            /* Dark Mode Shadows */
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+            --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.4);
+            --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.6), 0 8px 10px -6px rgb(0 0 0 / 0.5);
+        }
+
+        /* Legacy color variables for backward compatibility */
+        :root {
+            --gray-50: var(--bg-primary);
+            --gray-100: var(--bg-tertiary);
+            --gray-200: var(--border-primary);
+            --gray-300: var(--border-secondary);
+            --gray-400: var(--text-muted);
+            --gray-500: var(--text-tertiary);
+            --gray-600: var(--text-secondary);
+            --gray-700: var(--text-secondary);
+            --gray-800: var(--text-primary);
+            --gray-900: var(--text-primary);
         }
 
         * {
@@ -296,12 +389,13 @@ class MiniNotesApp {
 
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, var(--gray-50) 0%, var(--gray-100) 100%);
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-tertiary) 100%);
             height: 100vh;
             overflow: hidden;
-            color: var(--gray-900);
+            color: var(--text-primary);
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            transition: var(--transition-all);
         }
 
         .app {
@@ -312,26 +406,28 @@ class MiniNotesApp {
 
         .sidebar {
             width: 320px;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--bg-secondary);
             backdrop-filter: blur(20px);
-            border-right: 1px solid var(--gray-200);
+            border-right: 1px solid var(--border-primary);
             display: flex;
             flex-direction: column;
             box-shadow: var(--shadow-lg);
             position: relative;
             z-index: 10;
+            transition: var(--transition-all);
         }
 
         .sidebar-header {
             padding: 24px;
-            border-bottom: 1px solid var(--gray-200);
-            background: rgba(255, 255, 255, 0.8);
+            border-bottom: 1px solid var(--border-primary);
+            background: var(--bg-secondary);
+            transition: var(--transition-all);
         }
 
         .sidebar-header h1 {
             font-size: 28px;
             font-weight: 700;
-            color: var(--gray-900);
+            color: var(--text-primary);
             margin-bottom: 20px;
             display: flex;
             align-items: center;
@@ -348,10 +444,11 @@ class MiniNotesApp {
             align-items: center;
             gap: 12px;
             padding: 12px 16px;
-            background: var(--gray-50);
+            background: var(--bg-tertiary);
             border-radius: 12px;
             margin-bottom: 20px;
-            border: 1px solid var(--gray-200);
+            border: 1px solid var(--border-primary);
+            transition: var(--transition-all);
         }
 
         .user-avatar {
@@ -370,7 +467,29 @@ class MiniNotesApp {
         .user-name {
             flex: 1;
             font-weight: 500;
-            color: var(--gray-700);
+            color: var(--text-secondary);
+        }
+
+        .theme-toggle {
+            padding: 8px;
+            border: none;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            color: var(--text-tertiary);
+            cursor: pointer;
+            transition: var(--transition-all);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border: 1px solid var(--border-secondary);
+        }
+
+        .theme-toggle:hover {
+            background: var(--border-tertiary);
+            color: var(--text-primary);
+            transform: scale(1.05);
         }
 
         .sidebar-actions {
@@ -441,25 +560,25 @@ class MiniNotesApp {
         }
 
         .btn-secondary {
-            background: var(--gray-100);
-            color: var(--gray-700);
-            border: 1px solid var(--gray-300);
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-secondary);
         }
 
         .btn-secondary:hover:not(:disabled) {
-            background: var(--gray-200);
-            border-color: var(--gray-400);
+            background: var(--border-tertiary);
+            border-color: var(--border-secondary);
         }
 
         .btn-ghost {
             background: transparent;
-            color: var(--gray-600);
+            color: var(--text-tertiary);
             border: 1px solid transparent;
         }
 
         .btn-ghost:hover:not(:disabled) {
-            background: var(--gray-100);
-            color: var(--gray-700);
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
         }
 
         .notes-list {
@@ -491,10 +610,11 @@ class MiniNotesApp {
         .notes-search input {
             width: 100%;
             padding: 12px 16px 12px 44px;
-            border: 1px solid var(--gray-300);
+            border: 1px solid var(--border-secondary);
             border-radius: 12px;
             font-size: 14px;
-            background: white;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
             transition: var(--transition-all);
         }
 
@@ -504,22 +624,26 @@ class MiniNotesApp {
             box-shadow: var(--ring-primary);
         }
 
+        .notes-search input::placeholder {
+            color: var(--text-muted);
+        }
+
         .notes-search i {
             position: absolute;
             left: 16px;
             top: 50%;
             transform: translateY(-50%);
-            color: var(--gray-400);
+            color: var(--text-muted);
             font-size: 14px;
         }
 
         .note-item {
             padding: 16px;
-            border: 1px solid var(--gray-200);
+            border: 1px solid var(--border-primary);
             border-radius: 12px;
             margin-bottom: 8px;
             cursor: pointer;
-            background: white;
+            background: var(--bg-secondary);
             transition: var(--transition-all);
             position: relative;
             overflow: hidden;
@@ -537,7 +661,7 @@ class MiniNotesApp {
         }
 
         .note-item:hover {
-            background: var(--gray-50);
+            background: var(--bg-tertiary);
             border-color: var(--primary-300);
             transform: translateY(-1px);
             box-shadow: var(--shadow-md);
@@ -553,6 +677,10 @@ class MiniNotesApp {
             box-shadow: var(--shadow-md);
         }
 
+        [data-theme="dark"] .note-item.active {
+            background: var(--bg-tertiary);
+        }
+
         .note-item.active::before {
             background: var(--primary-600);
         }
@@ -566,7 +694,7 @@ class MiniNotesApp {
 
         .note-title {
             font-weight: 600;
-            color: var(--gray-900);
+            color: var(--text-primary);
             font-size: 15px;
             line-height: 1.4;
             flex: 1;
@@ -574,7 +702,7 @@ class MiniNotesApp {
 
         .note-date {
             font-size: 11px;
-            color: var(--gray-500);
+            color: var(--text-tertiary);
             font-weight: 400;
             white-space: nowrap;
             margin-left: 12px;
@@ -582,7 +710,7 @@ class MiniNotesApp {
 
         .note-preview {
             font-size: 13px;
-            color: var(--gray-600);
+            color: var(--text-tertiary);
             line-height: 1.4;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -595,31 +723,34 @@ class MiniNotesApp {
             flex: 1;
             display: flex;
             flex-direction: column;
-            background: white;
+            background: var(--bg-secondary);
             position: relative;
+            transition: var(--transition-all);
         }
 
         .editor-header {
             padding: 24px 32px;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--bg-secondary);
             backdrop-filter: blur(20px);
-            border-bottom: 1px solid var(--gray-200);
+            border-bottom: 1px solid var(--border-primary);
             display: flex;
             align-items: center;
             gap: 16px;
             box-shadow: var(--shadow-sm);
             position: relative;
             z-index: 5;
+            transition: var(--transition-all);
         }
 
         .title-input {
             flex: 1;
             padding: 12px 16px;
-            border: 1px solid var(--gray-300);
+            border: 1px solid var(--border-secondary);
             border-radius: 10px;
             font-size: 20px;
             font-weight: 600;
-            background: white;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
             transition: var(--transition-all);
         }
 
@@ -627,6 +758,10 @@ class MiniNotesApp {
             outline: none;
             border-color: var(--primary-600);
             box-shadow: var(--ring-primary);
+        }
+
+        .title-input::placeholder {
+            color: var(--text-muted);
         }
 
         .editor-toolbar {
@@ -640,10 +775,11 @@ class MiniNotesApp {
             align-items: center;
             gap: 8px;
             font-size: 14px;
-            color: var(--gray-500);
+            color: var(--text-tertiary);
             padding: 8px 12px;
             border-radius: 8px;
-            background: var(--gray-50);
+            background: var(--bg-tertiary);
+            transition: var(--transition-all);
         }
 
         .save-status.saving {
@@ -667,8 +803,9 @@ class MiniNotesApp {
         }
 
         .editor {
-            border-right: 1px solid var(--gray-200);
-            background: var(--gray-50);
+            border-right: 1px solid var(--border-primary);
+            background: var(--bg-tertiary);
+            transition: var(--transition-all);
         }
 
         .editor-content {
@@ -687,18 +824,20 @@ class MiniNotesApp {
             line-height: 1.7;
             resize: none;
             background: transparent;
-            color: var(--gray-900);
+            color: var(--text-primary);
+            transition: var(--transition-all);
         }
 
         .editor textarea::placeholder {
-            color: var(--gray-400);
+            color: var(--text-muted);
         }
 
         .preview {
-            background: white;
+            background: var(--bg-secondary);
             overflow-y: auto;
             scrollbar-width: thin;
-            scrollbar-color: var(--gray-300) transparent;
+            scrollbar-color: var(--border-secondary) transparent;
+            transition: var(--transition-all);
         }
 
         .preview::-webkit-scrollbar {
@@ -710,7 +849,7 @@ class MiniNotesApp {
         }
 
         .preview::-webkit-scrollbar-thumb {
-            background-color: var(--gray-300);
+            background-color: var(--border-secondary);
             border-radius: 4px;
         }
 
@@ -722,7 +861,7 @@ class MiniNotesApp {
         .preview h1, .preview h2, .preview h3, .preview h4, .preview h5, .preview h6 {
             margin-top: 32px;
             margin-bottom: 16px;
-            color: var(--gray-900);
+            color: var(--text-primary);
             font-weight: 700;
             line-height: 1.3;
         }
@@ -743,12 +882,12 @@ class MiniNotesApp {
         .preview p {
             margin-bottom: 20px;
             line-height: 1.7;
-            color: var(--gray-700);
+            color: var(--text-secondary);
         }
 
         .preview strong {
             font-weight: 600;
-            color: var(--gray-900);
+            color: var(--text-primary);
         }
 
         .preview em {
@@ -756,23 +895,28 @@ class MiniNotesApp {
         }
 
         .preview code {
-            background: var(--gray-100);
+            background: var(--bg-tertiary);
             padding: 4px 8px;
             border-radius: 6px;
             font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
             font-size: 14px;
-            color: var(--gray-800);
-            border: 1px solid var(--gray-200);
+            color: var(--text-primary);
+            border: 1px solid var(--border-primary);
         }
 
         .preview pre {
-            background: var(--gray-900);
-            color: var(--gray-100);
+            background: var(--text-primary);
+            color: var(--bg-secondary);
             padding: 24px;
             border-radius: 12px;
             overflow-x: auto;
             margin: 24px 0;
-            border: 1px solid var(--gray-700);
+            border: 1px solid var(--border-primary);
+        }
+
+        [data-theme="dark"] .preview pre {
+            background: #000000;
+            color: #f8f8f2;
         }
 
         .preview pre code {
@@ -786,9 +930,9 @@ class MiniNotesApp {
             border-left: 4px solid var(--primary-600);
             padding-left: 20px;
             margin: 24px 0;
-            color: var(--gray-600);
+            color: var(--text-tertiary);
             font-style: italic;
-            background: var(--gray-50);
+            background: var(--bg-tertiary);
             padding: 20px;
             border-radius: 8px;
         }
@@ -801,7 +945,7 @@ class MiniNotesApp {
         .preview li {
             margin-bottom: 8px;
             line-height: 1.6;
-            color: var(--gray-700);
+            color: var(--text-secondary);
         }
 
         .auth-modal {
@@ -836,14 +980,15 @@ class MiniNotesApp {
         }
 
         .auth-form {
-            background: white;
+            background: var(--bg-secondary);
             padding: 40px;
             border-radius: 20px;
             width: 420px;
             max-width: 90vw;
             box-shadow: var(--shadow-xl);
             animation: slideUp 0.3s ease-out;
-            border: 1px solid var(--gray-200);
+            border: 1px solid var(--border-primary);
+            transition: var(--transition-all);
         }
 
         .auth-header {
@@ -854,12 +999,12 @@ class MiniNotesApp {
         .auth-header h2 {
             font-size: 28px;
             font-weight: 700;
-            color: var(--gray-900);
+            color: var(--text-primary);
             margin-bottom: 8px;
         }
 
         .auth-header p {
-            color: var(--gray-600);
+            color: var(--text-tertiary);
             font-size: 16px;
         }
 
@@ -871,18 +1016,19 @@ class MiniNotesApp {
             display: block;
             margin-bottom: 8px;
             font-weight: 500;
-            color: var(--gray-700);
+            color: var(--text-secondary);
             font-size: 14px;
         }
 
         .form-group input {
             width: 100%;
             padding: 12px 16px;
-            border: 1px solid var(--gray-300);
+            border: 1px solid var(--border-secondary);
             border-radius: 10px;
             font-size: 16px;
             transition: var(--transition-all);
-            background: white;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
         }
 
         .form-group input:focus {
@@ -891,10 +1037,14 @@ class MiniNotesApp {
             box-shadow: var(--ring-primary);
         }
 
+        .form-group input::placeholder {
+            color: var(--text-muted);
+        }
+
         .auth-tabs {
             display: flex;
             margin-bottom: 32px;
-            background: var(--gray-100);
+            background: var(--bg-tertiary);
             border-radius: 12px;
             padding: 4px;
         }
@@ -909,12 +1059,12 @@ class MiniNotesApp {
             font-weight: 500;
             border-radius: 8px;
             transition: var(--transition-all);
-            color: var(--gray-600);
+            color: var(--text-tertiary);
         }
 
         .auth-tab.active {
-            background: white;
-            color: var(--gray-900);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
             box-shadow: var(--shadow-sm);
         }
 
@@ -924,7 +1074,7 @@ class MiniNotesApp {
             align-items: center;
             justify-content: center;
             height: 100%;
-            color: var(--gray-500);
+            color: var(--text-tertiary);
             text-align: center;
             padding: 40px;
         }
@@ -932,13 +1082,13 @@ class MiniNotesApp {
         .empty-state i {
             font-size: 64px;
             margin-bottom: 24px;
-            color: var(--gray-300);
+            color: var(--text-muted);
         }
 
         .empty-state h3 {
             font-size: 24px;
             font-weight: 600;
-            color: var(--gray-700);
+            color: var(--text-secondary);
             margin-bottom: 12px;
         }
 
@@ -1008,11 +1158,12 @@ class MiniNotesApp {
                 align-items: center;
                 justify-content: between;
                 padding: 16px 20px;
-                background: white;
-                border-bottom: 1px solid var(--gray-200);
+                background: var(--bg-secondary);
+                border-bottom: 1px solid var(--border-primary);
                 position: sticky;
                 top: 0;
                 z-index: 10;
+                transition: var(--transition-all);
             }
 
             .mobile-menu-btn {
@@ -1022,10 +1173,16 @@ class MiniNotesApp {
                 width: 40px;
                 height: 40px;
                 border: none;
-                background: var(--gray-100);
+                background: var(--bg-tertiary);
                 border-radius: 8px;
-                color: var(--gray-700);
+                color: var(--text-secondary);
                 cursor: pointer;
+                transition: var(--transition-all);
+            }
+
+            .mobile-menu-btn:hover {
+                background: var(--border-tertiary);
+                color: var(--text-primary);
             }
 
             .editor-container {
@@ -1092,6 +1249,9 @@ class MiniNotesApp {
                 <div class="user-info">
                     <div class="user-avatar" id="userAvatar">U</div>
                     <div class="user-name" id="userName">User</div>
+                    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">
+                        <i class="fas fa-moon" id="themeIcon"></i>
+                    </button>
                     <button class="btn btn-ghost" onclick="logout()" style="padding: 6px;">
                         <i class="fas fa-sign-out-alt"></i>
                     </button>
@@ -1167,6 +1327,9 @@ class MiniNotesApp {
 
         // Initialize app
         document.addEventListener('DOMContentLoaded', function() {
+            // Initialize theme
+            initializeTheme();
+            
             const token = localStorage.getItem('token');
             const username = localStorage.getItem('username');
             
@@ -1182,6 +1345,37 @@ class MiniNotesApp {
             document.addEventListener('keydown', handleKeyboardShortcuts);
         });
 
+        function initializeTheme() {
+            const savedTheme = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+            
+            setTheme(theme);
+        }
+
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            
+            const themeIcon = document.getElementById('themeIcon');
+            if (themeIcon) {
+                if (theme === 'dark') {
+                    themeIcon.className = 'fas fa-sun';
+                } else {
+                    themeIcon.className = 'fas fa-moon';
+                }
+            }
+            
+            localStorage.setItem('theme', theme);
+        }
+
+        function toggleTheme() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            setTheme(newTheme);
+            
+            showToast(\`Switched to \${newTheme} mode\`, 'success');
+        }
+
         function handleKeyboardShortcuts(event) {
             if (event.ctrlKey || event.metaKey) {
                 switch (event.key) {
@@ -1196,6 +1390,10 @@ class MiniNotesApp {
                     case 'f':
                         event.preventDefault();
                         document.getElementById('searchInput').focus();
+                        break;
+                    case 'd':
+                        event.preventDefault();
+                        toggleTheme();
                         break;
                 }
             }
@@ -1237,13 +1435,18 @@ class MiniNotesApp {
             setLoadingState(true);
 
             try {
+                console.log('Attempting authentication:', { authMode, username });
+                
                 const response = await fetch(\`/api/auth/\${authMode}\`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password })
                 });
 
+                console.log('Auth response status:', response.status);
+                
                 const data = await response.json();
+                console.log('Auth response data:', data);
 
                 if (response.ok) {
                     currentUser = data;
@@ -1254,8 +1457,10 @@ class MiniNotesApp {
                     loadNotes();
                 } else {
                     showToast(data.error || 'Authentication failed', 'error');
+                    console.error('Auth failed:', data);
                 }
             } catch (error) {
+                console.error('Auth error:', error);
                 showToast('Network error: ' + error.message, 'error');
             } finally {
                 setLoadingState(false);

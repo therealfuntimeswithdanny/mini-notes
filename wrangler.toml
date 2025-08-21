@@ -4,12 +4,12 @@ compatibility_date = "2024-01-01"
 
 [env.production]
 kv_namespaces = [
-  { binding = "NOTES", id = "your-notes-kv-id", preview_id = "your-notes-kv-preview-id" },
-  { binding = "USERS", id = "your-users-kv-id", preview_id = "your-users-kv-preview-id" }
+  { binding = "NOTES", id = "00690a1bf7424e9ebdd6ca7ac9d98dc0d", preview_id = "00690a1bf7424e9ebdd6ca7ac9d98dc0" },
+  { binding = "USERS", id = "5ee8564b621543188f21bd91b930a0d3", preview_id = "5ee8564b621543188f21bd91b930a0d3" }
 ]
 
 [env.development]
 kv_namespaces = [
-  { binding = "NOTES", id = "your-notes-kv-dev-id", preview_id = "your-notes-kv-dev-preview-id" },
-  { binding = "USERS", id = "your-users-kv-dev-id", preview_id = "your-users-kv-dev-preview-id" }
+  { binding = "NOTES", id = "y00690a1bf7424e9ebdd6ca7ac9d98dc0d", preview_id = "00690a1bf7424e9ebdd6ca7ac9d98dc0id" },
+  { binding = "USERS", id = "5ee8564b621543188f21bd91b930a0d3", preview_id = "5ee8564b621543188f21bd91b930a0d3" }
 ]

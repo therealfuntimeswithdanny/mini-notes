@@ -11,6 +11,45 @@ class MiniNotesApp {
   constructor(env) {
     this.NOTES = env.NOTES;
     this.USERS = env.USERS;
+    
+    // Debug: Log if KV namespaces are available
+    console.log('KV Namespaces available:', {
+      NOTES: !!this.NOTES,
+      USERS: !!this.USERS
+    });
+    
+    // For development, create in-memory storage if KV is not available
+    if (!this.NOTES || !this.USERS) {
+      console.warn('KV namespaces not available, using in-memory storage for development');
+      this.memoryStorage = new Map();
+    }
+  }
+  
+  // Helper method to get from storage (KV or memory)
+  async getFromStorage(namespace, key) {
+    if (namespace) {
+      return await namespace.get(key);
+    } else {
+      return this.memoryStorage.get(`${namespace === this.NOTES ? 'NOTES' : 'USERS'}:${key}`);
+    }
+  }
+  
+  // Helper method to put to storage (KV or memory)
+  async putToStorage(namespace, key, value, options = {}) {
+    if (namespace) {
+      return await namespace.put(key, value, options);
+    } else {
+      this.memoryStorage.set(`${namespace === this.NOTES ? 'NOTES' : 'USERS'}:${key}`, value);
+    }
+  }
+  
+  // Helper method to delete from storage (KV or memory)
+  async deleteFromStorage(namespace, key) {
+    if (namespace) {
+      return await namespace.delete(key);
+    } else {
+      this.memoryStorage.delete(`${namespace === this.NOTES ? 'NOTES' : 'USERS'}:${key}`);
+    }
   }
 
   async handleRequest(request) {
@@ -64,7 +103,7 @@ class MiniNotesApp {
         console.log('Login attempt for username:', username);
         
         const userKey = `user:${username}`;
-        const userData = await this.USERS.get(userKey);
+        const userData = await this.getFromStorage(this.USERS, userKey);
         
         if (!userData) {
           console.log('User not found:', username);
@@ -112,7 +151,7 @@ class MiniNotesApp {
         }
 
         const userKey = `user:${username}`;
-        const existingUser = await this.USERS.get(userKey);
+        const existingUser = await this.getFromStorage(this.USERS, userKey);
         
         if (existingUser) {
           console.log('Username already exists:', username);
@@ -130,7 +169,7 @@ class MiniNotesApp {
           createdAt: new Date().toISOString()
         };
 
-        await this.USERS.put(userKey, JSON.stringify(userData));
+        await this.putToStorage(this.USERS, userKey, JSON.stringify(userData));
         console.log('User created successfully:', username);
 
         const token = await this.generateToken(username);
@@ -163,7 +202,7 @@ class MiniNotesApp {
     if (method === 'GET' && !noteId) {
       // Get all notes for user
       const notesKey = `notes:${username}`;
-      const notesData = await this.NOTES.get(notesKey);
+      const notesData = await this.getFromStorage(this.NOTES, notesKey);
       const notes = notesData ? JSON.parse(notesData) : [];
       
       return new Response(JSON.stringify(notes), {
@@ -175,7 +214,7 @@ class MiniNotesApp {
       // Create new note
       const { title, content } = await request.json();
       const notesKey = `notes:${username}`;
-      const notesData = await this.NOTES.get(notesKey);
+      const notesData = await this.getFromStorage(this.NOTES, notesKey);
       const notes = notesData ? JSON.parse(notesData) : [];
       
       const newNote = {
@@ -198,7 +237,7 @@ class MiniNotesApp {
       // Update note
       const { title, content } = await request.json();
       const notesKey = `notes:${username}`;
-      const notesData = await this.NOTES.get(notesKey);
+      const notesData = await this.getFromStorage(this.NOTES, notesKey);
       const notes = notesData ? JSON.parse(notesData) : [];
       
       const noteIndex = notes.findIndex(note => note.id === noteId);
@@ -226,7 +265,7 @@ class MiniNotesApp {
     if (method === 'DELETE' && noteId) {
       // Delete note
       const notesKey = `notes:${username}`;
-      const notesData = await this.NOTES.get(notesKey);
+      const notesData = await this.getFromStorage(this.NOTES, notesKey);
       const notes = notesData ? JSON.parse(notesData) : [];
       
       const filteredNotes = notes.filter(note => note.id !== noteId);
@@ -263,7 +302,7 @@ class MiniNotesApp {
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
     };
     
-    await this.USERS.put(tokenKey, JSON.stringify(tokenData), { expirationTtl: 24 * 60 * 60 }); // 24 hours TTL
+    await this.putToStorage(this.USERS, tokenKey, JSON.stringify(tokenData), { expirationTtl: 24 * 60 * 60 }); // 24 hours TTL
     
     return token;
   }
@@ -278,7 +317,7 @@ class MiniNotesApp {
     
     try {
       const tokenKey = `token:${token}`;
-      const tokenData = await this.USERS.get(tokenKey);
+      const tokenData = await this.getFromStorage(this.USERS, tokenKey);
       
       if (!tokenData) {
         return null;
@@ -289,7 +328,7 @@ class MiniNotesApp {
       // Check if token has expired
       if (new Date() > new Date(tokenInfo.expiresAt)) {
         // Clean up expired token
-        await this.USERS.delete(tokenKey);
+        await this.deleteFromStorage(this.USERS, tokenKey);
         return null;
       }
       

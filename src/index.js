@@ -56,69 +56,94 @@ class MiniNotesApp {
 
   async handleAuth(request, action) {
     const method = request.method;
+    console.log(`Auth request: ${method} /api/auth/${action}`);
 
     if (action === 'login' && method === 'POST') {
-      const { username, password } = await request.json();
-      
-      const userKey = `user:${username}`;
-      const userData = await this.USERS.get(userKey);
-      
-      if (!userData) {
-        return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
-          status: 401,
+      try {
+        const { username, password } = await request.json();
+        console.log('Login attempt for username:', username);
+        
+        const userKey = `user:${username}`;
+        const userData = await this.USERS.get(userKey);
+        
+        if (!userData) {
+          console.log('User not found:', username);
+          return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+            status: 401,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        const user = JSON.parse(userData);
+        const isValid = await bcrypt.compare(password, user.passwordHash);
+
+        if (!isValid) {
+          console.log('Invalid password for user:', username);
+          return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+            status: 401,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        console.log('Login successful for user:', username);
+        const token = await this.generateToken(username);
+        return new Response(JSON.stringify({ token, username }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('Login error:', error);
+        return new Response(JSON.stringify({ error: 'Login failed: ' + error.message }), {
+          status: 500,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
         });
       }
-
-      const user = JSON.parse(userData);
-      const isValid = await bcrypt.compare(password, user.passwordHash);
-
-      if (!isValid) {
-        return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
-          status: 401,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-        });
-      }
-
-      const token = await this.generateToken(username);
-      return new Response(JSON.stringify({ token, username }), {
-        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-      });
     }
 
     if (action === 'register' && method === 'POST') {
-      const { username, password } = await request.json();
-      
-      if (!username || !password) {
-        return new Response(JSON.stringify({ error: 'Username and password required' }), {
-          status: 400,
+      try {
+        const { username, password } = await request.json();
+        console.log('Registration attempt for username:', username);
+        
+        if (!username || !password) {
+          return new Response(JSON.stringify({ error: 'Username and password required' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        const userKey = `user:${username}`;
+        const existingUser = await this.USERS.get(userKey);
+        
+        if (existingUser) {
+          console.log('Username already exists:', username);
+          return new Response(JSON.stringify({ error: 'Username already exists' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+          });
+        }
+
+        console.log('Creating new user:', username);
+        const passwordHash = await bcrypt.hash(password, 10);
+        const userData = {
+          username,
+          passwordHash,
+          createdAt: new Date().toISOString()
+        };
+
+        await this.USERS.put(userKey, JSON.stringify(userData));
+        console.log('User created successfully:', username);
+
+        const token = await this.generateToken(username);
+        return new Response(JSON.stringify({ token, username }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('Registration error:', error);
+        return new Response(JSON.stringify({ error: 'Registration failed: ' + error.message }), {
+          status: 500,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
         });
       }
-
-      const userKey = `user:${username}`;
-      const existingUser = await this.USERS.get(userKey);
-      
-      if (existingUser) {
-        return new Response(JSON.stringify({ error: 'Username already exists' }), {
-          status: 400,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-        });
-      }
-
-      const passwordHash = await bcrypt.hash(password, 10);
-      const userData = {
-        username,
-        passwordHash,
-        createdAt: new Date().toISOString()
-      };
-
-      await this.USERS.put(userKey, JSON.stringify(userData));
-
-      const token = await this.generateToken(username);
-      return new Response(JSON.stringify({ token, username }), {
-        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-      });
     }
 
     return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS });
@@ -225,10 +250,22 @@ class MiniNotesApp {
 
   async generateToken(username) {
     const encoder = new TextEncoder();
-    const data = encoder.encode(username + ':' + Date.now());
+    const data = encoder.encode(username + ':' + Date.now() + ':' + Math.random());
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const token = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    
+    // Store the token in KV storage with expiration (24 hours)
+    const tokenKey = `token:${token}`;
+    const tokenData = {
+      username: username,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+    };
+    
+    await this.USERS.put(tokenKey, JSON.stringify(tokenData), { expirationTtl: 24 * 60 * 60 }); // 24 hours TTL
+    
+    return token;
   }
 
   async authenticateRequest(request) {
@@ -238,13 +275,27 @@ class MiniNotesApp {
     }
 
     const token = authHeader.substring(7);
-    // In a real app, you'd validate the token properly
-    // For this demo, we'll extract username from the token (simplified)
+    
     try {
-      const userKey = `token:${token}`;
-      const username = await this.USERS.get(userKey);
-      return username;
-    } catch {
+      const tokenKey = `token:${token}`;
+      const tokenData = await this.USERS.get(tokenKey);
+      
+      if (!tokenData) {
+        return null;
+      }
+      
+      const tokenInfo = JSON.parse(tokenData);
+      
+      // Check if token has expired
+      if (new Date() > new Date(tokenInfo.expiresAt)) {
+        // Clean up expired token
+        await this.USERS.delete(tokenKey);
+        return null;
+      }
+      
+      return tokenInfo.username;
+    } catch (error) {
+      console.error('Token validation error:', error);
       return null;
     }
   }
@@ -1237,13 +1288,18 @@ class MiniNotesApp {
             setLoadingState(true);
 
             try {
+                console.log('Attempting authentication:', { authMode, username });
+                
                 const response = await fetch(\`/api/auth/\${authMode}\`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password })
                 });
 
+                console.log('Auth response status:', response.status);
+                
                 const data = await response.json();
+                console.log('Auth response data:', data);
 
                 if (response.ok) {
                     currentUser = data;
@@ -1254,8 +1310,10 @@ class MiniNotesApp {
                     loadNotes();
                 } else {
                     showToast(data.error || 'Authentication failed', 'error');
+                    console.error('Auth failed:', data);
                 }
             } catch (error) {
+                console.error('Auth error:', error);
                 showToast('Network error: ' + error.message, 'error');
             } finally {
                 setLoadingState(false);
